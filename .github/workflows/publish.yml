@@ -1,0 +1,28 @@
+name: Publish
+# Publica en npm y crea el Release de GitHub al etiquetar vX.Y.Z (la versión del tag debe coincidir con package.json).
+# Requiere el secreto NPM_TOKEN (token de automatización de npm con permiso de publicación en @movatec).
+on:
+  push: { tags: ['v*.*.*'] }
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions: { contents: write, id-token: write }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, registry-url: https://registry.npmjs.org, cache: npm }
+      - run: npm ci
+      - run: npm run build
+      - name: Verificar que el tag coincide con package.json
+        run: test "v$(node -p "require('./package.json').version")" = "${GITHUB_REF_NAME}"
+      - run: npm publish --provenance --access public
+        env: { NODE_AUTH_TOKEN: "${{ secrets.NPM_TOKEN }}" }
+      - name: Release de GitHub con los bundles
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/rtc-sdk.browser.js
+            dist/rtc-sdk.browser.js.map
+            dist/rtc-sdk.iife.js
+            dist/rtc-sdk.iife.js.map
+          generate_release_notes: true

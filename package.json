@@ -1,0 +1,32 @@
+{
+  "name": "@movatec/rtc-sdk",
+  "version": "1.0.0",
+  "description": "Movatec RTC JavaScript SDK: llamadas de voz WebRTC (salientes a la red telefónica, entrantes al navegador y entre usuarios) desde tu CRM o aplicación web. Superficie compatible con infobip-rtc-js.",
+  "type": "module",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "browser": "dist/rtc-sdk.browser.js",
+  "unpkg": "dist/rtc-sdk.iife.js",
+  "jsdelivr": "dist/rtc-sdk.iife.js",
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js", "default": "./dist/index.js" }, "./browser": "./dist/rtc-sdk.browser.js", "./iife": "./dist/rtc-sdk.iife.js" },
+  "files": ["dist", "README.md", "LICENSE", "CHANGELOG.md"],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -p tsconfig.json && npm run bundle && npm run bundle:iife",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "bundle": "esbuild src/index.ts --bundle --format=esm --target=es2020 --outfile=dist/rtc-sdk.browser.js --sourcemap --minify",
+    "bundle:iife": "esbuild src/index.ts --bundle --format=iife --global-name=MovatecRTC --target=es2020 --outfile=dist/rtc-sdk.iife.js --sourcemap --minify",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": ["webrtc", "sip", "voip", "softphone", "movatec", "haddacloud", "contact-center", "infobip-rtc"],
+  "author": "Movatec SpA <soporte@movatec.cl> (https://www.movatec.cl)",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/MovatecSpa/movatec-rtc-sdk-js.git" },
+  "bugs": { "url": "https://github.com/MovatecSpa/movatec-rtc-sdk-js/issues" },
+  "homepage": "https://github.com/MovatecSpa/movatec-rtc-sdk-js#readme",
+  "publishConfig": { "access": "public" },
+  "engines": { "node": ">=18" },
+  "dependencies": { "sip.js": "^0.21.2" },
+  "devDependencies": { "esbuild": "^0.24.0", "typescript": "^5.5.0" }
+}

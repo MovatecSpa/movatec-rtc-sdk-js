@@ -1,0 +1,22 @@
+<!doctype html><meta charset="utf-8"><title>Ejemplo integración CRM — Movatec RTC</title>
+<p>Este ejemplo asume que el backend del CRM ya pidió un token a <code>POST /v1/tokens</code> con su API key
+y lo entregó al navegador (nunca exponer la API key en el navegador).</p>
+<input id="dst" placeholder="+569XXXXXXXX"> <button id="call">Llamar</button> <button id="hang">Colgar</button> <button id="mute">Mute</button>
+<pre id="log"></pre>
+<script type="module">
+import { createRtc } from "../dist/index.js";
+const log = (m) => (document.getElementById("log").textContent += m + "\n");
+const token = new URLSearchParams(location.search).get("token");   // solo para demo
+const rtc = createRtc(token, { apiBaseUrl: "https://rtc-api.movatec.cl", debug: true });
+rtc.on("connected", (e) => log("conectado " + JSON.stringify(e)));
+rtc.on("disconnected", (e) => log("desconectado " + JSON.stringify(e)));
+rtc.on("error", (e) => log("error " + JSON.stringify(e)));
+await rtc.connect();
+let call;
+document.getElementById("call").onclick = () => {
+  call = rtc.callPhone(document.getElementById("dst").value, { from: rtc.allowedCli()[0] });
+  call.on("ringing", () => log("timbrando")).on("established", () => log("en llamada")).on("hangup", (h) => log("colgado " + JSON.stringify(h)));
+};
+document.getElementById("hang").onclick = () => call?.hangup();
+document.getElementById("mute").onclick = () => call?.mute(!call.isMuted());
+</script>
