@@ -99,6 +99,23 @@ audio real en lugar del tono local. Para desactivarlo: `createRtc(token, { ringb
 > `ringing` significa que el teléfono del destino está sonando; si necesitas el evento anterior,
 > usa `calling`.
 
+#### Número presentado al destino (ANI)
+
+El `from` que envías es la **entrada**: la red puede reescribir el número que finalmente ve
+quien recibe la llamada (por ejemplo, rotando un pool por país de destino). Por eso el ANI
+real no se conoce hasta que la llamada se cursa, y el SDK lo entrega cuando está disponible:
+
+```js
+call.on("outbound-ani", (a) => {
+  // Guárdalo junto a la gestión: es el número al que el cliente va a devolver el llamado.
+  registrarGestion({ numeroPresentado: a.ani, destino: a.destino, callId: a.callId });
+});
+```
+
+Llega unos segundos después de colgar (el dato viene del CDR de la red). También está en
+`call.outboundAni` una vez resuelto, y puedes pedirlo a mano con `call.resolveOutboundAni()`.
+Para desactivar la consulta automática: `createRtc(token, { resolveOutboundAni: false })`.
+
 #### Causas de corte
 
 `hangup` trae `cause` (valor estable) y `causeText` (texto en español para mostrar):

@@ -2,6 +2,21 @@
 
 Formato: [Keep a Changelog](https://keepachangelog.com/es/1.1.0/). Versionado semántico.
 
+## [1.2.0] - 2026-09-22
+### Agregado
+- Evento **`outbound-ani`**: el número que la plataforma presentó realmente al destino.
+  El CLI que envía el navegador es sólo la entrada — la red puede reescribir el ANI (pool
+  rotativo), así que el número que ve quien recibe no se conoce hasta que la llamada se cursa.
+  Se resuelve solo unos segundos después de colgar (medido: ~5 s) y trae `ani`, `cliEnviado`,
+  `destino`, `sipCode` y `callId`. Sirve para registrarlo junto a la gestión y reconocer la
+  devolución del llamado.
+- `call.outboundAni` (propiedad) y `call.resolveOutboundAni()` para pedirlo a mano.
+- `resolveOutboundAni: false` en las opciones para desactivar la consulta automática.
+
+### Notas
+- Requiere el endpoint `GET /v1/rtc/calls/{call_id}` de la plataforma (ya desplegado).
+- Sólo aplica a llamadas salientes a la red telefónica.
+
 ## [1.1.0] - 2026-09-22
 ### Agregado
 - Evento `progress`: cada respuesta provisional de la red (`180`, `183`) con `sipCode`, `sipReason` y `earlyMedia`.

@@ -40,7 +40,25 @@ export interface AudioLevelEvent {
     level: number;
     speaking: boolean;
 }
-export type CallEvent = "calling" | "progress" | "ringing" | "established" | "hangup" | "error" | "muted" | "unmuted" | "network-quality" | "hold" | "resume" | "transfer-accepted" | "transfer-failed";
+export type CallEvent = "calling" | "progress" | "ringing" | "established" | "hangup" | "error" | "muted" | "unmuted" | "network-quality" | "hold" | "resume" | "transfer-accepted" | "transfer-failed" | "outbound-ani";
+/**
+ * Número que la plataforma presentó realmente al destino.
+ *
+ * El CLI que envía el navegador es sólo la entrada: la red puede reescribir el ANI (por ejemplo
+ * con un pool rotativo), así que el número que ve quien recibe la llamada no se conoce hasta
+ * que se cursa. Se resuelve solo, unos segundos después de colgar, y llega en el evento
+ * `outbound-ani`. Guárdalo junto a la gestión para reconocer la devolución del llamado.
+ */
+export interface OutboundAniEvent {
+    /** Número presentado al destino. */
+    ani: string;
+    /** CLI que se envió desde el navegador (puede diferir del presentado). */
+    cliEnviado: string | null;
+    destino: string | null;
+    sipCode: number | null;
+    /** Call-ID SIP, el mismo de `call.sipCallId()`. */
+    callId: string;
+}
 /**
  * Causa legible del fin de una llamada. Permite mostrarle algo util al operador sin
  * que la aplicacion tenga que interpretar codigos SIP.
@@ -103,6 +121,11 @@ export interface RtcOptions {
      * Si la red manda early media (183 con audio), se usa ese audio y el tono local no suena.
      */
     ringbackTone?: boolean;
+    /**
+     * Resolver automáticamente el número presentado al destino al terminar cada llamada saliente
+     * (evento `outbound-ani`). Default true. Implica una consulta HTTP a la plataforma por llamada.
+     */
+    resolveOutboundAni?: boolean;
 }
 export interface CallPhoneOptions {
     /** CLI E.164 a presentar. Debe estar en allowed_cli del token. Default: default_cli de la sesión. */
@@ -157,6 +180,10 @@ export declare class PhoneCall extends Emitter<CallEvent> {
     readonly kind: CallKind;
     constructor(session: Session, audio: HTMLAudioElement, destination: string, from: string, onQuality?: ((q: NetworkQuality, callId: string) => void) | undefined, kind?: CallKind);
     private lastHangup;
+    /** Número presentado al destino; null hasta que la plataforma lo resuelve (ver evento "outbound-ani"). */
+    outboundAni: string | null;
+    /** Lo inyecta MovatecRTC: consulta la plataforma por el ANI de este Call-ID. */
+    _aniLookup?: (callId: string) => Promise<OutboundAniEvent | null>;
     private ringback;
     private rang;
     private earlyMedia;
@@ -170,6 +197,13 @@ export declare class PhoneCall extends Emitter<CallEvent> {
      * y NO se genera tono local, para no pisar el mensaje que la red está mandando.
      */
     _onProgress(code: number, reason: string | undefined, hasSdp: boolean): void;
+    /**
+     * Resuelve el número presentado al destino. Se llama solo al terminar la llamada; también
+     * puede invocarse a mano. El dato viene del CDR de la red, que tarda unos segundos en estar
+     * disponible (medido: < 10 s), así que se reintenta con espera creciente hasta ~25 s.
+     * Devuelve null si no se pudo resolver (sin red, llamada que nunca salió, etc.).
+     */
+    resolveOutboundAni(): Promise<OutboundAniEvent | null>;
     /** Completa el evento de corte con causa legible. */
     private buildHangup;
     /** Restricciones de media para esta llamada (micrófono elegido). Las fija MovatecRTC; default: cualquier micrófono. */
@@ -269,6 +303,11 @@ export declare class MovatecRTC extends Emitter<RtcEvent> {
     callUser(identity: string, options?: {
         customHeaders?: Record<string, string>;
     }): PhoneCall;
+    /**
+     * Consulta a la plataforma el número presentado en una llamada ya cursada.
+     * Responde `resuelto: false` mientras el CDR de la red no está disponible.
+     */
+    private fetchOutboundAni;
     allowedCli(): string[];
     isConnected(): boolean;
     private fetchSession;

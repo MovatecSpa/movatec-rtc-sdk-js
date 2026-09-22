@@ -182,6 +182,8 @@ export class PhoneCall extends Emitter {
         this.lastQuality = null;
         this.prevStats = null;
         this.lastHangup = null;
+        /** Número presentado al destino; null hasta que la plataforma lo resuelve (ver evento "outbound-ani"). */
+        this.outboundAni = null;
         this.ringback = new Ringback();
         this.rang = false;
         this.earlyMedia = false;
@@ -212,6 +214,7 @@ export class PhoneCall extends Emitter {
                     this.ringback.stop();
                     this.stopQuality();
                     setTimeout(() => this.emit("hangup", this.buildHangup()), 0);
+                    void this.resolveOutboundAni();
                     break;
             }
         });
@@ -241,6 +244,33 @@ export class PhoneCall extends Emitter {
         if (!this.earlyMedia && this.ringbackEnabled)
             this.ringback.start();
         this.emit("ringing", { sipCode: code, sipReason: reason, earlyMedia: early });
+    }
+    /**
+     * Resuelve el número presentado al destino. Se llama solo al terminar la llamada; también
+     * puede invocarse a mano. El dato viene del CDR de la red, que tarda unos segundos en estar
+     * disponible (medido: < 10 s), así que se reintenta con espera creciente hasta ~25 s.
+     * Devuelve null si no se pudo resolver (sin red, llamada que nunca salió, etc.).
+     */
+    async resolveOutboundAni() {
+        if (this.outboundAni)
+            return null; // ya resuelto: no se re-emite
+        if (!this._aniLookup || this.direction !== "outbound" || this.kind !== "phone")
+            return null;
+        const callId = this.sipCallId();
+        for (const waitMs of [1500, 2500, 4000, 6000, 10000]) {
+            await new Promise((r) => setTimeout(r, waitMs));
+            let info = null;
+            try {
+                info = await this._aniLookup(callId);
+            }
+            catch { /* reintento */ }
+            if (info?.ani) {
+                this.outboundAni = info.ani;
+                this.emit("outbound-ani", info);
+                return info;
+            }
+        }
+        return null;
     }
     /** Completa el evento de corte con causa legible. */
     buildHangup() {
@@ -581,6 +611,8 @@ export class MovatecRTC extends Emitter {
         const call = new PhoneCall(inviter, this.audio, dst, from, (q, id) => this.reportQuality(q, id));
         call.mediaConstraints = this.mediaConstraints();
         call.ringbackEnabled = this.opts.ringbackTone !== false;
+        if (this.opts.resolveOutboundAni !== false)
+            call._aniLookup = (id) => this.fetchOutboundAni(id);
         this.watchCallDevices(call);
         this.activeCall = call;
         call.on("hangup", () => { this.activeCall = null; });
@@ -766,6 +798,8 @@ export class MovatecRTC extends Emitter {
         const call = new PhoneCall(inviter, this.audio, id, this.session.sip.username, (q, cid) => this.reportQuality(q, cid), "user");
         call.mediaConstraints = this.mediaConstraints();
         call.ringbackEnabled = this.opts.ringbackTone !== false;
+        if (this.opts.resolveOutboundAni !== false)
+            call._aniLookup = (id) => this.fetchOutboundAni(id);
         this.watchCallDevices(call);
         this.activeCall = call;
         call.on("hangup", () => { this.activeCall = null; });
@@ -783,6 +817,20 @@ export class MovatecRTC extends Emitter {
             },
         }).catch((e) => { call._setHangup({ reason: "error", sipReason: String(e), cause: "error-interno", causeText: HANGUP_CAUSE_TEXT["error-interno"] }); call.emit("error", e); });
         return call;
+    }
+    /**
+     * Consulta a la plataforma el número presentado en una llamada ya cursada.
+     * Responde `resuelto: false` mientras el CDR de la red no está disponible.
+     */
+    async fetchOutboundAni(callId) {
+        const url = `${this.opts.apiBaseUrl.replace(/\/$/, "")}/v1/rtc/calls/${encodeURIComponent(callId)}`;
+        const res = await fetch(url, { headers: { Authorization: `Bearer ${this.token}` } });
+        if (!res.ok)
+            return null;
+        const d = await res.json();
+        if (!d?.resuelto || !d?.ani)
+            return null;
+        return { ani: d.ani, cliEnviado: d.cli_enviado ?? null, destino: d.destino ?? null, sipCode: d.sip_code ?? null, callId };
     }
     allowedCli() { return this.session?.allowed_cli ?? []; }
     isConnected() { return this.registerer?.state === RegistererState.Registered; }
@@ -847,6 +895,8 @@ export class MovatecRTC extends Emitter {
         const call = new PhoneCall(invitation, this.audio, to, caller, (q, id) => this.reportQuality(q, id), kind);
         call.mediaConstraints = this.mediaConstraints();
         call.ringbackEnabled = this.opts.ringbackTone !== false;
+        if (this.opts.resolveOutboundAni !== false)
+            call._aniLookup = (id) => this.fetchOutboundAni(id);
         this.watchCallDevices(call);
         this.activeCall = call;
         call.on("hangup", () => { this.activeCall = null; });
