@@ -364,15 +364,26 @@ export class PhoneCall extends Emitter<CallEvent> {
     if (this.outboundAni) return null;                 // ya resuelto: no se re-emite
     if (!this._aniLookup || this.direction !== "outbound" || this.kind !== "phone") return null;
     const callId = this.sipCallId();
+    // Se prefiere el número CONFIRMADO por la red (`fuente: "cdr"`): es el que vio el destino
+    // y el que va a aparecer si devuelven el llamado. El del pool sirve como respaldo cuando
+    // el CDR no llega a tiempo, pero podría no coincidir si la terminación lo reescribe.
+    let respaldo: OutboundAniEvent | null = null;
     for (const waitMs of [1500, 2500, 4000, 6000, 10000]) {
       await new Promise((r) => setTimeout(r, waitMs));
       let info: OutboundAniEvent | null = null;
       try { info = await this._aniLookup(callId); } catch { /* reintento */ }
-      if (info?.ani) {
+      if (!info?.ani) continue;
+      if (info.fuente === "cdr") {
         this.outboundAni = info.ani;
         this.emit("outbound-ani", info);
         return info;
       }
+      respaldo = info;                      // hay dato, pero aún sin confirmar: se sigue esperando
+    }
+    if (respaldo) {
+      this.outboundAni = respaldo.ani;
+      this.emit("outbound-ani", respaldo);
+      return respaldo;
     }
     return null;
   }

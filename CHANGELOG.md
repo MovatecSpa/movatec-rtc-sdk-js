@@ -2,6 +2,12 @@
 
 Formato: [Keep a Changelog](https://keepachangelog.com/es/1.1.0/). Versionado semántico.
 
+## [1.3.1] - 2026-09-22
+### Corregido
+- `outbound-ani` espera el número **confirmado por la red** (`fuente: "cdr"`) en lugar de emitir
+  el del pool apenas está disponible. Es el número que realmente vio el destino y el que va a
+  aparecer si devuelven el llamado; el del pool queda sólo como respaldo si el CDR no llega.
+
 ## [1.3.0] - 2026-09-22
 ### Agregado
 - `outbound-ani` ahora trae `aniPool` (el número que la plataforma eligió del pool del cliente
