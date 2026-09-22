@@ -50,8 +50,15 @@ export type CallEvent = "calling" | "progress" | "ringing" | "established" | "ha
  * `outbound-ani`. Guárdalo junto a la gestión para reconocer la devolución del llamado.
  */
 export interface OutboundAniEvent {
-    /** Número presentado al destino. */
+    /** Número presentado al destino. Es el dato a guardar junto a la gestión. */
     ani: string;
+    /**
+     * Número que la plataforma eligió del pool del cliente para esta llamada.
+     * Si difiere de `ani`, la terminación lo reescribió por su cuenta.
+     */
+    aniPool: string | null;
+    /** "cdr" = confirmado por la red (lo que vio el destino) · "pool" = aún sin confirmar. */
+    fuente: "cdr" | "pool" | null;
     /** CLI que se envió desde el navegador (puede diferir del presentado). */
     cliEnviado: string | null;
     destino: string | null;

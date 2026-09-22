@@ -830,7 +830,8 @@ export class MovatecRTC extends Emitter {
         const d = await res.json();
         if (!d?.resuelto || !d?.ani)
             return null;
-        return { ani: d.ani, cliEnviado: d.cli_enviado ?? null, destino: d.destino ?? null, sipCode: d.sip_code ?? null, callId };
+        return { ani: d.ani, aniPool: d.ani_pool ?? null, fuente: d.fuente ?? null, cliEnviado: d.cli_enviado ?? null,
+            destino: d.destino ?? null, sipCode: d.sip_code ?? null, callId };
     }
     allowedCli() { return this.session?.allowed_cli ?? []; }
     isConnected() { return this.registerer?.state === RegistererState.Registered; }

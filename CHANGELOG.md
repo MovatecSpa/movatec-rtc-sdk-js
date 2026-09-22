@@ -2,6 +2,14 @@
 
 Formato: [Keep a Changelog](https://keepachangelog.com/es/1.1.0/). Versionado semántico.
 
+## [1.3.0] - 2026-09-22
+### Agregado
+- `outbound-ani` ahora trae `aniPool` (el número que la plataforma eligió del pool del cliente
+  para esa llamada) y `fuente` (`"cdr"` = confirmado por la red, `"pool"` = aún sin confirmar).
+  Si `ani` y `aniPool` difieren, la terminación reescribió el número por su cuenta.
+- El dato llega antes: la plataforma publica el número elegido al cursar la llamada, sin
+  esperar el CDR.
+
 ## [1.2.0] - 2026-09-22
 ### Agregado
 - Evento **`outbound-ani`**: el número que la plataforma presentó realmente al destino.
