@@ -40,7 +40,18 @@ export interface AudioLevelEvent {
     level: number;
     speaking: boolean;
 }
-export type CallEvent = "ringing" | "established" | "hangup" | "error" | "muted" | "unmuted" | "network-quality" | "hold" | "resume" | "transfer-accepted" | "transfer-failed";
+export type CallEvent = "calling" | "progress" | "ringing" | "established" | "hangup" | "error" | "muted" | "unmuted" | "network-quality" | "hold" | "resume" | "transfer-accepted" | "transfer-failed";
+/**
+ * Causa legible del fin de una llamada. Permite mostrarle algo util al operador sin
+ * que la aplicacion tenga que interpretar codigos SIP.
+ */
+export type HangupCause = "numero-invalido" | "destino-no-habilitado" | "cli-no-permitido" | "sin-saldo" | "ocupado" | "no-contesta" | "no-disponible" | "rechazada" | "usuario-no-registrado" | "sin-respuesta-red" | "cancelada" | "colgada" | "error-interno";
+/** Respuesta provisional recibida (100/180/183). `earlyMedia` = el 183 trae audio de la red. */
+export interface ProgressEvent {
+    sipCode: number;
+    sipReason?: string;
+    earlyMedia: boolean;
+}
 /** Calidad de red medida en el navegador con RTCPeerConnection.getStats() (cada 2 s). score: 5 excelente … 1 inutilizable. */
 export interface NetworkQuality {
     score: 1 | 2 | 3 | 4 | 5;
@@ -87,6 +98,11 @@ export interface RtcOptions {
     autoRecoverInput?: boolean;
     /** Emitir "audio-level" con el nivel del micrófono local durante la llamada. Default true. */
     audioLevel?: boolean;
+    /**
+     * Reproducir un tono de llamada local mientras el destino timbra (default true).
+     * Si la red manda early media (183 con audio), se usa ese audio y el tono local no suena.
+     */
+    ringbackTone?: boolean;
 }
 export interface CallPhoneOptions {
     /** CLI E.164 a presentar. Debe estar en allowed_cli del token. Default: default_cli de la sesión. */
@@ -104,7 +120,20 @@ export interface HangupEvent {
     reason: "local" | "remote" | "rejected" | "timeout" | "error";
     sipCode?: number;
     sipReason?: string;
+    /** Causa interpretada, lista para decidir que mostrar al operador. */
+    cause?: HangupCause;
+    /** Texto en espanol correspondiente a `cause`, para pintar directo en pantalla. */
+    causeText?: string;
+    /** true si la llamada alcanzo a timbrar en el destino (hubo 180/183). */
+    rang?: boolean;
 }
+/** Texto por defecto de cada causa (es-CL). */
+export declare const HANGUP_CAUSE_TEXT: Record<HangupCause, string>;
+/**
+ * Traduce un codigo SIP a una causa de negocio.
+ * `rang` distingue 408/480 "nunca timbro" (problema de red/ruta) de "timbro y no contestaron".
+ */
+export declare function sipCause(code: number, reason?: string, rang?: boolean): HangupCause;
 declare class Emitter<E extends string> {
     private handlers;
     on(event: E, fn: (payload: any) => void): this;
@@ -128,6 +157,21 @@ export declare class PhoneCall extends Emitter<CallEvent> {
     readonly kind: CallKind;
     constructor(session: Session, audio: HTMLAudioElement, destination: string, from: string, onQuality?: ((q: NetworkQuality, callId: string) => void) | undefined, kind?: CallKind);
     private lastHangup;
+    private ringback;
+    private rang;
+    private earlyMedia;
+    /** Reproducir tono de llamada local mientras timbra. Lo fija MovatecRTC desde RtcOptions. */
+    ringbackEnabled: boolean;
+    /** true si el destino alcanzó a timbrar (llegó 180 o 183). */
+    get hasRung(): boolean;
+    /**
+     * Uso interno: respuesta provisional de la red (100/180/183).
+     * 183 con SDP = audio real de la operadora (locución, tono propio): se engancha ese audio
+     * y NO se genera tono local, para no pisar el mensaje que la red está mandando.
+     */
+    _onProgress(code: number, reason: string | undefined, hasSdp: boolean): void;
+    /** Completa el evento de corte con causa legible. */
+    private buildHangup;
     /** Restricciones de media para esta llamada (micrófono elegido). Las fija MovatecRTC; default: cualquier micrófono. */
     mediaConstraints: MediaStreamConstraints;
     /** Llamada entrante: contestar (pide micrófono). */

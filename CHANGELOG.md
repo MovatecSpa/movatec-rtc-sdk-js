@@ -2,6 +2,29 @@
 
 Formato: [Keep a Changelog](https://keepachangelog.com/es/1.1.0/). Versionado semántico.
 
+## [1.1.0] - 2026-09-22
+### Agregado
+- Evento `progress`: cada respuesta provisional de la red (`180`, `183`) con `sipCode`, `sipReason` y `earlyMedia`.
+- Evento `calling`: el INVITE salió. Es lo que antes, incorrectamente, se emitía como `ringing`.
+- **Tono de llamada local** mientras el destino timbra (WebAudio, 400 Hz con cadencia 1 s / 3 s).
+  Se desactiva con `ringbackTone: false`. Si la red manda *early media* (183 con audio), se
+  reproduce ese audio real y el tono local no suena.
+- `hangup` ahora trae `cause` (causa de negocio), `causeText` (texto en español listo para pantalla)
+  y `rang` (si alcanzó a timbrar). Ver `HangupCause` y `HANGUP_CAUSE_TEXT`.
+- `sipCause(code, reason, rang)` exportada: traduce un código SIP a causa de negocio.
+- `PhoneCall.hasRung`.
+
+### Corregido
+- **`ringing` era un falso positivo**: se emitía al enviar el INVITE (SIP.js `Establishing`), así que
+  una llamada que la red descartaba igual aparecía "timbrando" para el operador. Ahora `ringing` se
+  emite solo al recibir `180`/`183` reales del destino.
+- `404 No routes` (prefijo/país no habilitado en la cuenta) se reporta como `destino-no-habilitado`
+  y no como número inválido: la acción del operador es distinta.
+
+### Cambios incompatibles
+- Quien escuchara `ringing` para saber "se envió la llamada" debe escuchar `calling`.
+  `ringing` ahora significa que el teléfono del destino está sonando de verdad.
+
 ## [1.0.0] - 2026-09-04
 ### Agregado
 - `createRtc(token, options)`, `connect()` / `disconnect()`, reconexión automática con backoff.

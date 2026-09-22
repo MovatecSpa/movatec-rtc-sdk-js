@@ -18,6 +18,58 @@
  *  - Sin lógica oculta: cada estado emite un evento con `reason`.
  */
 import { Inviter, Invitation, Registerer, RegistererState, SessionState, UserAgent, URI, Web, } from "sip.js";
+/** Texto por defecto de cada causa (es-CL). */
+export const HANGUP_CAUSE_TEXT = {
+    "numero-invalido": "El numero marcado no es valido o no existe",
+    "destino-no-habilitado": "El destino no esta habilitado para esta cuenta",
+    "cli-no-permitido": "El numero de presentacion no esta autorizado",
+    "sin-saldo": "Sin saldo o credito suficiente para cursar la llamada",
+    "ocupado": "El destino esta ocupado",
+    "no-contesta": "El destino no contesto",
+    "no-disponible": "El destino no esta disponible en este momento",
+    "rechazada": "La llamada fue rechazada",
+    "usuario-no-registrado": "El usuario no esta conectado",
+    "sin-respuesta-red": "La red no respondio la llamada",
+    "cancelada": "Llamada cancelada antes de contestar",
+    "colgada": "Llamada finalizada",
+    "error-interno": "Error interno al cursar la llamada",
+};
+/**
+ * Traduce un codigo SIP a una causa de negocio.
+ * `rang` distingue 408/480 "nunca timbro" (problema de red/ruta) de "timbro y no contestaron".
+ */
+export function sipCause(code, reason, rang = false) {
+    const r = (reason ?? "").toLowerCase();
+    if (/balance|credit|saldo|payment|funds/.test(r))
+        return "sin-saldo";
+    // Yeti responde "404 No routes" cuando el prefijo/pais no esta habilitado en la cuenta:
+    // eso NO es un numero mal marcado, es un destino no habilitado. Distinguirlos importa
+    // porque la accion del operador es distinta (corregir el numero vs. pedir habilitacion).
+    if (/no route|not allowed|forbidden dst|destination/.test(r))
+        return "destino-no-habilitado";
+    switch (code) {
+        case 400:
+        case 404:
+        case 484:
+        case 485: return "numero-invalido";
+        case 402: return "sin-saldo";
+        case 403: return /cli|caller|from/.test(r) ? "cli-no-permitido" : "destino-no-habilitado";
+        case 408: return rang ? "no-contesta" : "sin-respuesta-red";
+        case 410: return "numero-invalido";
+        case 480: return rang ? "no-contesta" : "no-disponible";
+        case 486:
+        case 600: return "ocupado";
+        case 487: return "cancelada";
+        case 503: return "no-disponible";
+        case 603: return "rechazada";
+        default:
+            if (code >= 500 && code < 600)
+                return "error-interno";
+            if (code >= 400)
+                return "rechazada";
+            return "colgada";
+    }
+}
 // --------------------------------------------------------------------------- emisor mínimo
 class Emitter {
     constructor() {
@@ -41,6 +93,81 @@ class Emitter {
     }
 }
 // --------------------------------------------------------------------------- llamada
+/**
+ * Tono de llamada generado localmente con WebAudio (no consume red ni depende de que
+ * la operadora mande early media). Cadencia chilena por defecto: 400 Hz, 1 s on / 3 s off.
+ * Si el navegador bloquea el AudioContext por autoplay, falla en silencio: nunca rompe la llamada.
+ */
+class Ringback {
+    constructor(freqHz = 400, onMs = 1000, offMs = 3000, volume = 0.12) {
+        this.freqHz = freqHz;
+        this.onMs = onMs;
+        this.offMs = offMs;
+        this.volume = volume;
+        this.ctx = null;
+        this.gain = null;
+        this.osc = null;
+        this.timer = null;
+        this.playing = false;
+    }
+    start(sinkId) {
+        if (this.playing)
+            return;
+        try {
+            const Ctx = window.AudioContext ?? window.webkitAudioContext;
+            if (!Ctx)
+                return;
+            this.ctx = new Ctx();
+            void this.ctx.resume().catch(() => { });
+            this.gain = this.ctx.createGain();
+            this.gain.gain.value = 0;
+            this.osc = this.ctx.createOscillator();
+            this.osc.type = "sine";
+            this.osc.frequency.value = this.freqHz;
+            this.osc.connect(this.gain);
+            this.gain.connect(this.ctx.destination);
+            this.osc.start();
+            this.playing = true;
+            const beep = () => {
+                if (!this.ctx || !this.gain)
+                    return;
+                const t = this.ctx.currentTime;
+                // rampas cortas para evitar el "click" de abrir/cerrar la ganancia de golpe
+                this.gain.gain.setValueAtTime(0, t);
+                this.gain.gain.linearRampToValueAtTime(this.volume, t + 0.02);
+                this.gain.gain.setValueAtTime(this.volume, t + this.onMs / 1000 - 0.02);
+                this.gain.gain.linearRampToValueAtTime(0, t + this.onMs / 1000);
+            };
+            beep();
+            this.timer = setInterval(beep, this.onMs + this.offMs);
+        }
+        catch {
+            this.stop();
+        }
+    }
+    stop() {
+        if (this.timer) {
+            clearInterval(this.timer);
+            this.timer = null;
+        }
+        try {
+            this.osc?.stop();
+        }
+        catch { }
+        try {
+            this.gain?.disconnect();
+        }
+        catch { }
+        try {
+            void this.ctx?.close();
+        }
+        catch { }
+        this.osc = null;
+        this.gain = null;
+        this.ctx = null;
+        this.playing = false;
+    }
+}
 export class PhoneCall extends Emitter {
     constructor(session, audio, destination, from, onQuality, kind = "phone") {
         super();
@@ -55,6 +182,11 @@ export class PhoneCall extends Emitter {
         this.lastQuality = null;
         this.prevStats = null;
         this.lastHangup = null;
+        this.ringback = new Ringback();
+        this.rang = false;
+        this.earlyMedia = false;
+        /** Reproducir tono de llamada local mientras timbra. Lo fija MovatecRTC desde RtcOptions. */
+        this.ringbackEnabled = true;
         /** Restricciones de media para esta llamada (micrófono elegido). Las fija MovatecRTC; default: cualquier micrófono. */
         this.mediaConstraints = { audio: true, video: false };
         this.onHold = false;
@@ -62,10 +194,14 @@ export class PhoneCall extends Emitter {
         this.direction = session instanceof Invitation ? "inbound" : "outbound";
         session.stateChange.addListener((state) => {
             switch (state) {
+                // OJO: SIP.js entra en Establishing al ENVIAR el INVITE, no cuando el destino timbra.
+                // Emitir "ringing" aquí era un falso positivo: la llamada "sonaba" aunque la red la
+                // hubiera descartado. Ahora esto es "calling" y el "ringing" real sale del 180/183.
                 case SessionState.Establishing:
-                    this.emit("ringing");
+                    this.emit("calling");
                     break;
                 case SessionState.Established:
+                    this.ringback.stop();
                     this.startedAt = Date.now();
                     this.attachRemoteAudio();
                     this.startQuality();
@@ -73,11 +209,49 @@ export class PhoneCall extends Emitter {
                     break;
                 // Terminated llega antes que requestDelegate.onReject: se difiere para que el evento traiga el código SIP (p. ej. 403 del edge)
                 case SessionState.Terminated:
+                    this.ringback.stop();
                     this.stopQuality();
-                    setTimeout(() => this.emit("hangup", this.lastHangup ?? { reason: "remote" }), 0);
+                    setTimeout(() => this.emit("hangup", this.buildHangup()), 0);
                     break;
             }
         });
+    }
+    /** true si el destino alcanzó a timbrar (llegó 180 o 183). */
+    get hasRung() { return this.rang; }
+    /**
+     * Uso interno: respuesta provisional de la red (100/180/183).
+     * 183 con SDP = audio real de la operadora (locución, tono propio): se engancha ese audio
+     * y NO se genera tono local, para no pisar el mensaje que la red está mandando.
+     */
+    _onProgress(code, reason, hasSdp) {
+        if (code === 100)
+            return; // Trying: la red tomó el INVITE, aún no timbra
+        const early = code === 183 && hasSdp;
+        this.emit("progress", { sipCode: code, sipReason: reason, earlyMedia: early });
+        if (code !== 180 && code !== 183)
+            return;
+        if (early && !this.earlyMedia) {
+            this.earlyMedia = true;
+            this.ringback.stop();
+            this.attachRemoteAudio();
+        }
+        if (this.rang)
+            return;
+        this.rang = true;
+        if (!this.earlyMedia && this.ringbackEnabled)
+            this.ringback.start();
+        this.emit("ringing", { sipCode: code, sipReason: reason, earlyMedia: early });
+    }
+    /** Completa el evento de corte con causa legible. */
+    buildHangup() {
+        const h = this.lastHangup ?? { reason: "remote" };
+        if (h.cause)
+            return { ...h, rang: this.rang };
+        const code = h.sipCode ?? 0;
+        const cause = h.reason === "local" ? "colgada"
+            : code ? sipCause(code, h.sipReason, this.rang)
+                : (h.reason === "error" ? "error-interno" : "colgada");
+        return { ...h, cause, causeText: HANGUP_CAUSE_TEXT[cause], rang: this.rang };
     }
     /** Llamada entrante: contestar (pide micrófono). */
     async accept() {
@@ -406,19 +580,24 @@ export class MovatecRTC extends Emitter {
         });
         const call = new PhoneCall(inviter, this.audio, dst, from, (q, id) => this.reportQuality(q, id));
         call.mediaConstraints = this.mediaConstraints();
+        call.ringbackEnabled = this.opts.ringbackTone !== false;
         this.watchCallDevices(call);
         this.activeCall = call;
         call.on("hangup", () => { this.activeCall = null; });
         inviter.invite({
             requestDelegate: {
+                // 100/180/183: de aquí sale el "ringing" real y el tono de llamada.
+                onProgress: (resp) => call._onProgress(resp.message.statusCode ?? 0, resp.message.reasonPhrase, !!resp.message.body),
                 onReject: (resp) => {
                     const code = resp.message.statusCode ?? 0;
-                    call._setHangup({ reason: code === 408 ? "timeout" : "rejected", sipCode: code, sipReason: resp.message.reasonPhrase });
+                    const reason = resp.message.reasonPhrase;
+                    const cause = sipCause(code, reason, call.hasRung);
+                    call._setHangup({ reason: code === 408 ? "timeout" : "rejected", sipCode: code, sipReason: reason, cause, causeText: HANGUP_CAUSE_TEXT[cause] });
                     if (code === 403)
-                        this.emit("error", { code: "CLI_NOT_ALLOWED_OR_FRAUD_CONTROL", detail: resp.message.reasonPhrase });
+                        this.emit("error", { code: "CLI_NOT_ALLOWED_OR_FRAUD_CONTROL", detail: reason });
                 },
             },
-        }).catch((e) => { call._setHangup({ reason: "error", sipReason: String(e) }); call.emit("error", e); });
+        }).catch((e) => { call._setHangup({ reason: "error", sipReason: String(e), cause: "error-interno", causeText: HANGUP_CAUSE_TEXT["error-interno"] }); call.emit("error", e); });
         return call;
     }
     /** Micrófonos disponibles. Pide permiso una vez si las etiquetas vienen vacías (el navegador las oculta sin permiso). */
@@ -586,19 +765,23 @@ export class MovatecRTC extends Emitter {
         const inviter = new Inviter(this.ua, target, { params: { fromUri }, extraHeaders, sessionDescriptionHandlerOptions: { constraints: { audio: true, video: false } } });
         const call = new PhoneCall(inviter, this.audio, id, this.session.sip.username, (q, cid) => this.reportQuality(q, cid), "user");
         call.mediaConstraints = this.mediaConstraints();
+        call.ringbackEnabled = this.opts.ringbackTone !== false;
         this.watchCallDevices(call);
         this.activeCall = call;
         call.on("hangup", () => { this.activeCall = null; });
         inviter.invite({
             requestDelegate: {
+                onProgress: (resp) => call._onProgress(resp.message.statusCode ?? 0, resp.message.reasonPhrase, !!resp.message.body),
                 onReject: (resp) => {
                     const code = resp.message.statusCode ?? 0;
-                    call._setHangup({ reason: code === 408 ? "timeout" : "rejected", sipCode: code, sipReason: resp.message.reasonPhrase });
+                    const reason = resp.message.reasonPhrase;
+                    const cause = code === 480 ? "usuario-no-registrado" : sipCause(code, reason, call.hasRung);
+                    call._setHangup({ reason: code === 408 ? "timeout" : "rejected", sipCode: code, sipReason: reason, cause, causeText: HANGUP_CAUSE_TEXT[cause] });
                     if (code === 480)
                         this.emit("error", { code: "USER_NOT_REGISTERED", detail: `${id} no está conectado` });
                 },
             },
-        }).catch((e) => { call._setHangup({ reason: "error", sipReason: String(e) }); call.emit("error", e); });
+        }).catch((e) => { call._setHangup({ reason: "error", sipReason: String(e), cause: "error-interno", causeText: HANGUP_CAUSE_TEXT["error-interno"] }); call.emit("error", e); });
         return call;
     }
     allowedCli() { return this.session?.allowed_cli ?? []; }
@@ -663,6 +846,7 @@ export class MovatecRTC extends Emitter {
         const caller = kind === "user" ? (invitation.request.getHeader("X-Movatec-Caller") ?? from) : from;
         const call = new PhoneCall(invitation, this.audio, to, caller, (q, id) => this.reportQuality(q, id), kind);
         call.mediaConstraints = this.mediaConstraints();
+        call.ringbackEnabled = this.opts.ringbackTone !== false;
         this.watchCallDevices(call);
         this.activeCall = call;
         call.on("hangup", () => { this.activeCall = null; });

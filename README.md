@@ -77,15 +77,42 @@ await rtc.connect();
 ```js
 const call = rtc.callPhone("+56912345678", { from: "+56221234567" });
 
-call.on("ringing", () => console.log("timbrando"));
+call.on("calling",  () => console.log("llamada enviada"));            // salió el INVITE
+call.on("ringing",  (p) => console.log("timbrando de verdad", p.sipCode));  // 180/183 del destino
+call.on("progress", (p) => console.log("avance", p.sipCode, p.earlyMedia ? "(audio de la red)" : ""));
 call.on("established", () => console.log("en llamada"));
-call.on("hangup", (h) => console.log("fin:", h.reason, h.sipCode ?? ""));
+
+// `cause` / `causeText` dicen QUÉ pasó, sin interpretar códigos SIP a mano.
+call.on("hangup", (h) => console.log("fin:", h.cause, "-", h.causeText, `(SIP ${h.sipCode ?? "-"})`));
 
 call.mute(true);      call.unmute();
 await call.hold();    await call.resume();
 call.sendDTMF("1");
 await call.hangup();
 ```
+
+Mientras el destino timbra, el SDK reproduce un **tono de llamada** local. Si la red envía
+*early media* (un `183` con audio: locución de la operadora, su propio tono), se reproduce ese
+audio real en lugar del tono local. Para desactivarlo: `createRtc(token, { ringbackTone: false })`.
+
+> **Ojo con `ringing`**: hasta 1.0.0 se emitía al *enviar* la llamada, no al timbrar. Desde 1.1.0
+> `ringing` significa que el teléfono del destino está sonando; si necesitas el evento anterior,
+> usa `calling`.
+
+#### Causas de corte
+
+`hangup` trae `cause` (valor estable) y `causeText` (texto en español para mostrar):
+
+| `cause` | Cuándo |
+|---|---|
+| `numero-invalido` | El número no existe o está mal formado |
+| `destino-no-habilitado` | El país/prefijo no está habilitado en la cuenta (p. ej. `404 No routes`) |
+| `cli-no-permitido` | El CLI presentado no está autorizado para ese usuario |
+| `sin-saldo` | Sin crédito para cursar |
+| `ocupado` / `no-contesta` / `no-disponible` | Del lado del destino |
+| `rechazada` / `cancelada` / `colgada` | Fin explícito |
+| `sin-respuesta-red` | La red no respondió (nunca timbró) |
+| `error-interno` | Error 5xx o excepción local |
 
 `from` debe ser uno de los CLIs autorizados en el token; si no, `callPhone` lanza una excepción y, en cualquier caso, el borde de Movatec rechaza la llamada con 403. Una sesión mantiene una llamada a la vez.
 
