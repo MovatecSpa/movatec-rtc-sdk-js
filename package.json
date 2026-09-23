@@ -1,6 +1,6 @@
 {
   "name": "@movatec/rtc-sdk",
-  "version": "1.3.1",
+  "version": "1.4.0",
   "description": "Movatec RTC JavaScript SDK: llamadas de voz WebRTC (salientes a la red telefónica, entrantes al navegador y entre usuarios) desde tu CRM o aplicación web. Superficie compatible con infobip-rtc-js.",
   "type": "module",
   "main": "dist/index.js",

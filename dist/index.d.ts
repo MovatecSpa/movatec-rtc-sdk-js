@@ -70,7 +70,7 @@ export interface OutboundAniEvent {
  * Causa legible del fin de una llamada. Permite mostrarle algo util al operador sin
  * que la aplicacion tenga que interpretar codigos SIP.
  */
-export type HangupCause = "numero-invalido" | "destino-no-habilitado" | "cli-no-permitido" | "sin-saldo" | "ocupado" | "no-contesta" | "no-disponible" | "rechazada" | "usuario-no-registrado" | "sin-respuesta-red" | "cancelada" | "colgada" | "error-interno";
+export type HangupCause = "numero-invalido" | "destino-no-habilitado" | "cli-no-permitido" | "empresa-no-habilitada" | "sin-saldo" | "ocupado" | "no-contesta" | "no-disponible" | "rechazada" | "usuario-no-registrado" | "sin-respuesta-red" | "cancelada" | "colgada" | "error-interno";
 /** Respuesta provisional recibida (100/180/183). `earlyMedia` = el 183 trae audio de la red. */
 export interface ProgressEvent {
     sipCode: number;
@@ -139,6 +139,12 @@ export interface CallPhoneOptions {
     from?: string;
     /** Headers SIP X-* adicionales (uso interno/diagnóstico; el edge los elimina antes de Yeti). */
     customHeaders?: Record<string, string>;
+    /**
+     * Empresa cliente cuya cartera se está gestionando. Determina con qué pool de números se
+     * presenta la llamada. Debe estar entre las habilitadas en el token; si se omite, se usa la
+     * empresa por defecto del usuario. Sólo aplica si tu cuenta usa separación por empresa.
+     */
+    account?: string;
     /** SOLO para validación: omite la comprobación local del CLI para que sea el edge quien lo rechace (403). */
     __skipLocalCliCheck?: boolean;
 }
@@ -316,6 +322,8 @@ export declare class MovatecRTC extends Emitter<RtcEvent> {
      */
     private fetchOutboundAni;
     allowedCli(): string[];
+    /** Empresas cliente habilitadas para este usuario (vacío si tu cuenta no usa separación por empresa). */
+    accounts(): string[];
     isConnected(): boolean;
     private fetchSession;
     private scheduleExpiry;

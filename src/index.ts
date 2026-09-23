@@ -68,6 +68,7 @@ export type HangupCause =
   | "numero-invalido"        // 400/404/484: el numero no existe o esta mal formado
   | "destino-no-habilitado"  // 403 desde la red: el destino/pais no esta habilitado en la cuenta
   | "cli-no-permitido"       // 403 del edge: el CLI presentado no esta en la whitelist del token
+  | "empresa-no-habilitada"  // 403 del edge: la empresa pedida no esta entre las del token
   | "sin-saldo"              // 402/403 con indicio de saldo/credito
   | "ocupado"                // 486/600
   | "no-contesta"            // 408 extremo a extremo / 480 tras timbrar
@@ -148,6 +149,12 @@ export interface CallPhoneOptions {
   from?: string;
   /** Headers SIP X-* adicionales (uso interno/diagnóstico; el edge los elimina antes de Yeti). */
   customHeaders?: Record<string, string>;
+  /**
+   * Empresa cliente cuya cartera se está gestionando. Determina con qué pool de números se
+   * presenta la llamada. Debe estar entre las habilitadas en el token; si se omite, se usa la
+   * empresa por defecto del usuario. Sólo aplica si tu cuenta usa separación por empresa.
+   */
+  account?: string;
   /** SOLO para validación: omite la comprobación local del CLI para que sea el edge quien lo rechace (403). */
   __skipLocalCliCheck?: boolean;
 }
@@ -170,6 +177,7 @@ export const HANGUP_CAUSE_TEXT: Record<HangupCause, string> = {
   "numero-invalido": "El numero marcado no es valido o no existe",
   "destino-no-habilitado": "El destino no esta habilitado para esta cuenta",
   "cli-no-permitido": "El numero de presentacion no esta autorizado",
+  "empresa-no-habilitada": "La empresa indicada no esta habilitada para este usuario",
   "sin-saldo": "Sin saldo o credito suficiente para cursar la llamada",
   "ocupado": "El destino esta ocupado",
   "no-contesta": "El destino no contesto",
@@ -189,6 +197,9 @@ export const HANGUP_CAUSE_TEXT: Record<HangupCause, string> = {
 export function sipCause(code: number, reason?: string, rang = false): HangupCause {
   const r = (reason ?? "").toLowerCase();
   if (/balance|credit|saldo|payment|funds/.test(r)) return "sin-saldo";
+  // Va ANTES del match genérico de "not allowed": "Account not allowed" contiene esa frase y
+  // se clasificaría como destino no habilitado, que es un problema distinto.
+  if (/account|empresa/.test(r)) return "empresa-no-habilitada";
   // Yeti responde "404 No routes" cuando el prefijo/pais no esta habilitado en la cuenta:
   // eso NO es un numero mal marcado, es un destino no habilitado. Distinguirlos importa
   // porque la accion del operador es distinta (corregir el numero vs. pedir habilitacion).
@@ -216,6 +227,8 @@ interface RtcSession {
   ice_servers: RTCIceServer[];
   allowed_cli: string[];
   default_cli: string | null;
+  accounts?: string[];
+  default_account?: string | null;
   capabilities: string[];
 }
 
@@ -637,7 +650,9 @@ export class MovatecRTC extends Emitter<RtcEvent> {
       }).catch(reject);
     });
     this.scheduleExpiry(s.sip.expires_at);
-    this.emit("connected", { identity: s.sip.username, allowedCli: s.allowed_cli, capabilities: s.capabilities });
+    this.emit("connected", { identity: s.sip.username, allowedCli: s.allowed_cli,
+                             accounts: s.accounts ?? [], defaultAccount: s.default_account ?? null,
+                             capabilities: s.capabilities });
   }
 
   /** Cierra sesión: cuelga llamada activa, un-REGISTER y cierra el WSS. */
@@ -664,6 +679,15 @@ export class MovatecRTC extends Emitter<RtcEvent> {
     const target = UserAgent.makeURI(`sip:${dst}@${this.session.sip.realm}`)!;
     const fromUri = new URI("sip", from, this.session.sip.realm);
     const extraHeaders = Object.entries(options.customHeaders ?? {}).map(([k, v]) => `X-${k.replace(/^X-/i, "")}: ${v}`);
+    // La empresa viaja como cabecera, pero el edge sólo la acepta si está en el token: el
+    // navegador no puede elegir el pool de una cartera que no le corresponde.
+    const account = options.account ?? this.session.default_account ?? null;
+    if (account) {
+      if (this.session.accounts?.length && !this.session.accounts.includes(account)) {
+        throw new Error(`Empresa ${account} no habilitada para este usuario`);
+      }
+      extraHeaders.push(`X-Movatec-Account: ${account}`);
+    }
     const inviter = new Inviter(this.ua, target, {
       // From = CLI: el edge valida From contra la whitelist; el username SIP (auth) va en Authorization.
       params: { fromUri, fromDisplayName: from },
@@ -861,6 +885,8 @@ export class MovatecRTC extends Emitter<RtcEvent> {
   }
 
   allowedCli(): string[] { return this.session?.allowed_cli ?? []; }
+  /** Empresas cliente habilitadas para este usuario (vacío si tu cuenta no usa separación por empresa). */
+  accounts(): string[] { return this.session?.accounts ?? []; }
   isConnected(): boolean { return this.registerer?.state === RegistererState.Registered; }
 
   // ----------------------------------------------------------------- internos

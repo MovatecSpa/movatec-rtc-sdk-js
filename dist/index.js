@@ -23,6 +23,7 @@ export const HANGUP_CAUSE_TEXT = {
     "numero-invalido": "El numero marcado no es valido o no existe",
     "destino-no-habilitado": "El destino no esta habilitado para esta cuenta",
     "cli-no-permitido": "El numero de presentacion no esta autorizado",
+    "empresa-no-habilitada": "La empresa indicada no esta habilitada para este usuario",
     "sin-saldo": "Sin saldo o credito suficiente para cursar la llamada",
     "ocupado": "El destino esta ocupado",
     "no-contesta": "El destino no contesto",
@@ -42,6 +43,10 @@ export function sipCause(code, reason, rang = false) {
     const r = (reason ?? "").toLowerCase();
     if (/balance|credit|saldo|payment|funds/.test(r))
         return "sin-saldo";
+    // Va ANTES del match genérico de "not allowed": "Account not allowed" contiene esa frase y
+    // se clasificaría como destino no habilitado, que es un problema distinto.
+    if (/account|empresa/.test(r))
+        return "empresa-no-habilitada";
     // Yeti responde "404 No routes" cuando el prefijo/pais no esta habilitado en la cuenta:
     // eso NO es un numero mal marcado, es un destino no habilitado. Distinguirlos importa
     // porque la accion del operador es distinta (corregir el numero vs. pedir habilitacion).
@@ -572,7 +577,9 @@ export class MovatecRTC extends Emitter {
             }).catch(reject);
         });
         this.scheduleExpiry(s.sip.expires_at);
-        this.emit("connected", { identity: s.sip.username, allowedCli: s.allowed_cli, capabilities: s.capabilities });
+        this.emit("connected", { identity: s.sip.username, allowedCli: s.allowed_cli,
+            accounts: s.accounts ?? [], defaultAccount: s.default_account ?? null,
+            capabilities: s.capabilities });
     }
     /** Cierra sesión: cuelga llamada activa, un-REGISTER y cierra el WSS. */
     async disconnect() {
@@ -614,6 +621,15 @@ export class MovatecRTC extends Emitter {
         const target = UserAgent.makeURI(`sip:${dst}@${this.session.sip.realm}`);
         const fromUri = new URI("sip", from, this.session.sip.realm);
         const extraHeaders = Object.entries(options.customHeaders ?? {}).map(([k, v]) => `X-${k.replace(/^X-/i, "")}: ${v}`);
+        // La empresa viaja como cabecera, pero el edge sólo la acepta si está en el token: el
+        // navegador no puede elegir el pool de una cartera que no le corresponde.
+        const account = options.account ?? this.session.default_account ?? null;
+        if (account) {
+            if (this.session.accounts?.length && !this.session.accounts.includes(account)) {
+                throw new Error(`Empresa ${account} no habilitada para este usuario`);
+            }
+            extraHeaders.push(`X-Movatec-Account: ${account}`);
+        }
         const inviter = new Inviter(this.ua, target, {
             // From = CLI: el edge valida From contra la whitelist; el username SIP (auth) va en Authorization.
             params: { fromUri, fromDisplayName: from },
@@ -846,6 +862,8 @@ export class MovatecRTC extends Emitter {
             destino: d.destino ?? null, sipCode: d.sip_code ?? null, callId };
     }
     allowedCli() { return this.session?.allowed_cli ?? []; }
+    /** Empresas cliente habilitadas para este usuario (vacío si tu cuenta no usa separación por empresa). */
+    accounts() { return this.session?.accounts ?? []; }
     isConnected() { return this.registerer?.state === RegistererState.Registered; }
     // ----------------------------------------------------------------- internos
     async fetchSession() {

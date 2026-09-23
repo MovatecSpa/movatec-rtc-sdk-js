@@ -2,6 +2,21 @@
 
 Formato: [Keep a Changelog](https://keepachangelog.com/es/1.1.0/). Versionado semántico.
 
+## [1.4.0] - 2026-09-23
+### Agregado
+- **Pool de números por empresa cliente.** Si tu cuenta gestiona carteras de varias empresas,
+  cada una puede tener su propio conjunto de números y nunca comparte con otra.
+  - `POST /v1/tokens` acepta `accounts: [...]` con las empresas que ese usuario puede gestionar.
+    La primera es la que se usa cuando la llamada no indica ninguna.
+  - `callPhone(destino, { account: "empresa-a" })` elige la cartera en esa llamada.
+  - `rtc.accounts()` lista las habilitadas; `connected` trae `accounts` y `defaultAccount`.
+- Nueva causa `empresa-no-habilitada` en `hangup`: la empresa pedida no está entre las del token.
+
+### Seguridad
+- La empresa viaja como cabecera pero **la plataforma sólo la acepta si está firmada en el token**.
+  Verificado con un bundle manipulado: la llamada se rechaza en el borde con `403` en ~0,7 s y
+  nunca sale a la red.
+
 ## [1.3.1] - 2026-09-22
 ### Corregido
 - `outbound-ani` espera el número **confirmado por la red** (`fuente: "cdr"`) en lugar de emitir
