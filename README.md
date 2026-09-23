@@ -99,6 +99,36 @@ audio real en lugar del tono local. Para desactivarlo: `createRtc(token, { ringb
 > `ringing` significa que el teléfono del destino está sonando; si necesitas el evento anterior,
 > usa `calling`.
 
+#### Varias empresas en una misma cuenta
+
+Si tu plataforma gestiona carteras de **varias empresas** y cada una debe presentar sus propios
+números, indícalo al emitir el token: el pool de números se elige según la empresa, y una empresa
+nunca usa los números de otra.
+
+```js
+// En tu backend, al pedir el token para un agente:
+POST /v1/tokens
+{ "identity": "agente-42", "accounts": ["acme", "betasa"] }
+```
+
+```js
+// En el navegador, al llamar:
+rtc.callPhone("+56912345678", { account: "acme" });  // usa el pool de acme
+rtc.callPhone("+56912345678");                        // usa la primera del token
+
+rtc.accounts();   // ["acme", "betasa"]
+```
+
+Los identificadores son los tuyos: para la plataforma son etiquetas, no necesita saber a qué
+empresa corresponden.
+
+> **La empresa se valida contra el token.** Viaja como cabecera, pero el borde sólo la acepta si
+> está entre las que firmaste al emitirlo. Pedir una empresa que no está en el token corta la
+> llamada con `403` y `cause: "empresa-no-habilitada"` antes de que salga a la red. Así, un front
+> comprometido no puede presentar los números de una empresa a la cartera de otra.
+
+Si no usas separación por empresa, omite `accounts` y todo funciona con el pool de la cuenta.
+
 #### Número presentado al destino (ANI)
 
 El `from` que envías es la **entrada**: la red puede reescribir el número que finalmente ve
