@@ -18,7 +18,7 @@
  *  - Sin lógica oculta: cada estado emite un evento con `reason`.
  */
 import { Session } from "sip.js";
-export type RtcEvent = "connected" | "disconnected" | "reconnecting" | "incoming-webrtc-call" | "error" | "device-change" | "input-device-lost" | "output-device-lost" | "audio-level";
+export type RtcEvent = "connected" | "disconnected" | "reconnecting" | "incoming-webrtc-call" | "error" | "warning" | "device-change" | "input-device-lost" | "output-device-lost" | "audio-level";
 /** Dispositivo de audio (micrófono o parlante) tal como lo reporta el navegador. */
 export interface AudioDevice {
     deviceId: string;
@@ -70,7 +70,7 @@ export interface OutboundAniEvent {
  * Causa legible del fin de una llamada. Permite mostrarle algo util al operador sin
  * que la aplicacion tenga que interpretar codigos SIP.
  */
-export type HangupCause = "numero-invalido" | "destino-no-habilitado" | "cli-no-permitido" | "empresa-no-habilitada" | "sin-saldo" | "ocupado" | "no-contesta" | "no-disponible" | "rechazada" | "usuario-no-registrado" | "sin-respuesta-red" | "cancelada" | "colgada" | "error-interno";
+export type HangupCause = "numero-invalido" | "destino-no-habilitado" | "cli-no-permitido" | "empresa-no-habilitada" | "cli-no-pertenece-a-empresa" | "sin-saldo" | "ocupado" | "no-contesta" | "no-disponible" | "rechazada" | "usuario-no-registrado" | "sin-respuesta-red" | "cancelada" | "colgada" | "error-interno";
 /** Respuesta provisional recibida (100/180/183). `earlyMedia` = el 183 trae audio de la red. */
 export interface ProgressEvent {
     sipCode: number;
@@ -134,18 +134,56 @@ export interface RtcOptions {
      */
     resolveOutboundAni?: boolean;
 }
+/**
+ * Empresa cliente (cartera) con su propia asignación de números.
+ *
+ * Quien emite el token declara qué ANI puede presentar cada empresa. Con eso el SDK resuelve
+ * solo el número de cada llamada y **bloquea el cruce**: la cartera de una empresa nunca sale
+ * con el número de otra. La frontera de seguridad sigue siendo el edge, que revalida la
+ * asignación contra el token firmado; esta validación local sólo da el error temprano.
+ */
+export interface AccountInfo {
+    /** Identificador de la empresa tal como se firmó en el token. */
+    id: string;
+    /** Nombre para mostrar en el CRM. null si el token no lo trae. */
+    label: string | null;
+    /** Números E.164 asignados a esta empresa. Vacío = hereda el pool de la cuenta. */
+    cli: string[];
+    /** Número por defecto de la empresa (el primero de `cli` si el token no fija otro). */
+    defaultCli: string | null;
+}
 export interface CallPhoneOptions {
-    /** CLI E.164 a presentar. Debe estar en allowed_cli del token. Default: default_cli de la sesión. */
+    /**
+     * CLI E.164 a presentar.
+     *
+     * Sin `account`, o con una empresa sin números propios: debe estar en `allowed_cli` del token
+     * (default: `default_cli` de la sesión).
+     *
+     * Con una empresa que sí tiene números asignados: **fija** uno de los de ESA empresa y el edge
+     * lo respeta. Pedir un número de otra empresa lanza error antes de enviar el INVITE. Si se
+     * omite, la plataforma rota dentro del pool de la empresa.
+     */
     from?: string;
     /** Headers SIP X-* adicionales (uso interno/diagnóstico; el edge los elimina antes de Yeti). */
     customHeaders?: Record<string, string>;
     /**
-     * Empresa cliente cuya cartera se está gestionando. Determina con qué pool de números se
-     * presenta la llamada. Debe estar entre las habilitadas en el token; si se omite, se usa la
-     * empresa por defecto del usuario. Sólo aplica si tu cuenta usa separación por empresa.
+     * Empresa cliente cuya cartera se está gestionando. Determina con qué números se presenta la
+     * llamada. Debe estar entre las habilitadas en el token; si se omite, se usa la empresa por
+     * defecto del usuario. Sólo aplica si tu cuenta usa separación por empresa.
      */
     account?: string;
-    /** SOLO para validación: omite la comprobación local del CLI para que sea el edge quien lo rechace (403). */
+    /**
+     * SOLO para validación: omite la comprobación local del CLI para que sea el edge quien lo
+     * rechace (403).
+     *
+     * ⚠️ Salta **también** la pertenencia del CLI a la empresa: con esto el SDK deja salir un
+     * INVITE cruzado a propósito, para poder comprobar que el borde lo corta. No la uses en
+     * producción — con ella el único control que queda es el del edge.
+     *
+     * Cada uso emite un evento `warning` y un `console.warn`: el riesgo de este escape no es que
+     * alguien lo use para atacar (quien controla el navegador no lo necesita), sino que quede
+     * activo en producción sin que nadie lo note.
+     */
     __skipLocalCliCheck?: boolean;
 }
 export interface DisconnectedEvent {
@@ -269,6 +307,8 @@ export declare class MovatecRTC extends Emitter<RtcEvent> {
     private ua;
     private registerer;
     private session;
+    /** Empresas del token ya normalizadas (ver parseAccounts). Se rearma en cada connect(). */
+    private accountList;
     private audio;
     private expiryTimer;
     private activeCall;
@@ -321,9 +361,23 @@ export declare class MovatecRTC extends Emitter<RtcEvent> {
      * Responde `resuelto: false` mientras el CDR de la red no está disponible.
      */
     private fetchOutboundAni;
-    allowedCli(): string[];
-    /** Empresas cliente habilitadas para este usuario (vacío si tu cuenta no usa separación por empresa). */
+    /**
+     * Números que este usuario puede presentar. Con `account`, los de esa empresa (vacío si la
+     * empresa no tiene asignación propia y hereda el pool de la cuenta).
+     */
+    allowedCli(account?: string): string[];
+    /** Ids de las empresas habilitadas para este usuario (vacío si tu cuenta no usa separación por empresa). */
     accounts(): string[];
+    /** Igual que accounts(), pero con el nombre y los números asignados a cada empresa: para pintar el selector del CRM. */
+    accountsDetail(): AccountInfo[];
+    /** Una empresa por id, o la empresa por defecto del usuario si se omite. null si no existe. */
+    account(id?: string): AccountInfo | null;
+    /**
+     * Uso INTERNO: devuelve la empresa por referencia. Todo lo que salga del SDK tiene que ir
+     * clonado — si el CRM puede mutar el pool de una empresa, la validación de callPhone termina
+     * comparando contra datos ya envenenados y el número de una cartera se cuela en otra.
+     */
+    private findAccount;
     isConnected(): boolean;
     private fetchSession;
     private scheduleExpiry;

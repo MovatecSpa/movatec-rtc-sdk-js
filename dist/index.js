@@ -24,6 +24,7 @@ export const HANGUP_CAUSE_TEXT = {
     "destino-no-habilitado": "El destino no esta habilitado para esta cuenta",
     "cli-no-permitido": "El numero de presentacion no esta autorizado",
     "empresa-no-habilitada": "La empresa indicada no esta habilitada para este usuario",
+    "cli-no-pertenece-a-empresa": "El numero de presentacion no esta asignado a esa empresa",
     "sin-saldo": "Sin saldo o credito suficiente para cursar la llamada",
     "ocupado": "El destino esta ocupado",
     "no-contesta": "El destino no contesto",
@@ -43,6 +44,10 @@ export function sipCause(code, reason, rang = false) {
     const r = (reason ?? "").toLowerCase();
     if (/balance|credit|saldo|payment|funds/.test(r))
         return "sin-saldo";
+    // Un 403 que menciona CLI *y* empresa es un cruce de carteras (el numero existe pero es de
+    // otra empresa), no una empresa deshabilitada. Va primero porque el texto contiene ambas.
+    if (/cli|caller|from/.test(r) && /account|empresa/.test(r))
+        return "cli-no-pertenece-a-empresa";
     // Va ANTES del match genérico de "not allowed": "Account not allowed" contiene esa frase y
     // se clasificaría como destino no habilitado, que es un problema distinto.
     if (/account|empresa/.test(r))
@@ -74,6 +79,23 @@ export function sipCause(code, reason, rang = false) {
                 return "rechazada";
             return "colgada";
     }
+}
+/** Normaliza `accounts` del token al mismo shape, venga en formato plano o con asignación de ANI. */
+/** Misma normalización que se aplica al destino: el CLI no puede rebotar por venir con espacios. */
+function normalizarE164(n) { return n.replace(/[\s().-]/g, ""); }
+function parseAccounts(raw) {
+    return (raw ?? []).map((a) => {
+        if (typeof a === "string")
+            return { id: a, label: null, cli: [], defaultCli: null };
+        // Tolerante con el token: un `cli` mal formado deja a la empresa sin números propios
+        // (hereda el pool de la cuenta) en vez de tumbar connect() con un TypeError.
+        const cli = (Array.isArray(a.cli) ? a.cli : []).filter((c) => typeof c === "string" && c.trim() !== "").map(normalizarE164);
+        // default_cli del token manda, pero sólo si está en el pool de la empresa: un default que
+        // apunta afuera es justamente el cruce que este modelo existe para impedir.
+        const porDefecto = typeof a.default_cli === "string" ? normalizarE164(a.default_cli) : null;
+        const fijado = porDefecto && cli.includes(porDefecto) ? porDefecto : null;
+        return { id: a.id, label: a.label ?? null, cli, defaultCli: fijado ?? cli[0] ?? null };
+    });
 }
 // --------------------------------------------------------------------------- emisor mínimo
 class Emitter {
@@ -505,6 +527,8 @@ export class MovatecRTC extends Emitter {
         this.ua = null;
         this.registerer = null;
         this.session = null;
+        /** Empresas del token ya normalizadas (ver parseAccounts). Se rearma en cada connect(). */
+        this.accountList = [];
         this.expiryTimer = null;
         this.activeCall = null;
         this.stopping = false;
@@ -528,6 +552,7 @@ export class MovatecRTC extends Emitter {
         this.stopping = false;
         this.session = await this.fetchSession();
         const s = this.session;
+        this.accountList = parseAccounts(s.accounts);
         const uri = UserAgent.makeURI(`sip:${s.sip.username}@${s.sip.realm}`);
         if (!uri)
             throw new Error("URI SIP inválida");
@@ -578,7 +603,9 @@ export class MovatecRTC extends Emitter {
         });
         this.scheduleExpiry(s.sip.expires_at);
         this.emit("connected", { identity: s.sip.username, allowedCli: s.allowed_cli,
-            accounts: s.accounts ?? [], defaultAccount: s.default_account ?? null,
+            accounts: this.accountList.map((a) => a.id),
+            accountsDetail: this.accountsDetail(),
+            defaultAccount: s.default_account ?? null,
             capabilities: s.capabilities });
     }
     /** Cierra sesión: cuelga llamada activa, un-REGISTER y cierra el WSS. */
@@ -610,26 +637,60 @@ export class MovatecRTC extends Emitter {
             throw new Error("No conectado: llama a connect() primero");
         if (this.activeCall)
             throw new Error("Ya hay una llamada activa (v1: una llamada por sesión)");
-        const dst = destination.replace(/[\s().-]/g, "");
+        const dst = normalizarE164(destination);
         if (!/^\+[1-9]\d{6,14}$/.test(dst))
             throw new Error(`Destino no E.164: ${destination}`);
-        const from = options.from ?? this.session.default_cli ?? undefined;
+        if (options.__skipLocalCliCheck) {
+            const aviso = "__skipLocalCliCheck activo: el SDK no valida el CLI ni su empresa. Sólo para pruebas contra el edge.";
+            console.warn(`[movatec-rtc] ${aviso}`);
+            this.emit("warning", { code: "LOCAL_CLI_CHECK_SKIPPED", detail: aviso, destination: dst });
+        }
+        const account = options.account ?? this.session.default_account ?? null;
+        const acc = account ? this.findAccount(account) : null;
+        if (account && this.accountList.length && !acc) {
+            throw new Error(`Empresa ${account} no habilitada para este usuario`);
+        }
+        // Cuando la empresa trae números propios asignados, el CLI se resuelve DENTRO de ella:
+        //  - con `from`  → se fija ese número (tiene que ser de esta empresa) y el edge lo respeta;
+        //  - sin `from`  → se manda el de la empresa como entrada y el edge rota su pool.
+        // Sin asignación por empresa, todo queda como antes: whitelist plana del token.
+        let from;
+        let cliMode = null;
+        if (acc?.cli.length) {
+            if (options.from) {
+                const pedido = normalizarE164(options.from);
+                if (!options.__skipLocalCliCheck && !acc.cli.includes(pedido)) {
+                    throw new Error(`CLI ${options.from} no está asignado a la empresa ${acc.id}`);
+                }
+                from = pedido;
+                cliMode = "fixed";
+            }
+            else {
+                from = acc.defaultCli ?? acc.cli[0];
+                cliMode = "pool";
+            }
+        }
+        else {
+            const crudo = options.from ?? this.session.default_cli ?? undefined;
+            from = crudo ? normalizarE164(crudo) : undefined;
+            if (from && !options.__skipLocalCliCheck && !this.session.allowed_cli.map(normalizarE164).includes(from)) {
+                throw new Error(`CLI ${crudo} no permitido para este usuario`);
+            }
+        }
         if (!from)
             throw new Error("No hay CLI disponible para este usuario");
-        if (!options.__skipLocalCliCheck && !this.session.allowed_cli.includes(from))
-            throw new Error(`CLI ${from} no permitido para este usuario`);
         const target = UserAgent.makeURI(`sip:${dst}@${this.session.sip.realm}`);
         const fromUri = new URI("sip", from, this.session.sip.realm);
         const extraHeaders = Object.entries(options.customHeaders ?? {}).map(([k, v]) => `X-${k.replace(/^X-/i, "")}: ${v}`);
         // La empresa viaja como cabecera, pero el edge sólo la acepta si está en el token: el
         // navegador no puede elegir el pool de una cartera que no le corresponde.
-        const account = options.account ?? this.session.default_account ?? null;
-        if (account) {
-            if (this.session.accounts?.length && !this.session.accounts.includes(account)) {
-                throw new Error(`Empresa ${account} no habilitada para este usuario`);
-            }
+        if (account)
             extraHeaders.push(`X-Movatec-Account: ${account}`);
-        }
+        // Le dice al edge si el From es una elección del CRM ("fixed", hay que respetarla) o sólo
+        // la entrada por defecto ("pool", puede rotar). Si el edge lo ignora respeta el From, que
+        // es el comportamiento conservador.
+        if (cliMode)
+            extraHeaders.push(`X-Movatec-Cli-Mode: ${cliMode}`);
         const inviter = new Inviter(this.ua, target, {
             // From = CLI: el edge valida From contra la whitelist; el username SIP (auth) va en Authorization.
             params: { fromUri, fromDisplayName: from },
@@ -861,9 +922,31 @@ export class MovatecRTC extends Emitter {
         return { ani: d.ani, aniPool: d.ani_pool ?? null, fuente: d.fuente ?? null, cliEnviado: d.cli_enviado ?? null,
             destino: d.destino ?? null, sipCode: d.sip_code ?? null, callId };
     }
-    allowedCli() { return this.session?.allowed_cli ?? []; }
-    /** Empresas cliente habilitadas para este usuario (vacío si tu cuenta no usa separación por empresa). */
-    accounts() { return this.session?.accounts ?? []; }
+    /**
+     * Números que este usuario puede presentar. Con `account`, los de esa empresa (vacío si la
+     * empresa no tiene asignación propia y hereda el pool de la cuenta).
+     */
+    allowedCli(account) {
+        if (!account)
+            return [...(this.session?.allowed_cli ?? [])];
+        return [...(this.findAccount(account)?.cli ?? [])];
+    }
+    /** Ids de las empresas habilitadas para este usuario (vacío si tu cuenta no usa separación por empresa). */
+    accounts() { return this.accountList.map((a) => a.id); }
+    /** Igual que accounts(), pero con el nombre y los números asignados a cada empresa: para pintar el selector del CRM. */
+    accountsDetail() { return this.accountList.map((a) => ({ ...a, cli: [...a.cli] })); }
+    /** Una empresa por id, o la empresa por defecto del usuario si se omite. null si no existe. */
+    account(id) {
+        const target = id ?? this.session?.default_account ?? null;
+        const acc = target ? this.findAccount(target) : null;
+        return acc ? { ...acc, cli: [...acc.cli] } : null;
+    }
+    /**
+     * Uso INTERNO: devuelve la empresa por referencia. Todo lo que salga del SDK tiene que ir
+     * clonado — si el CRM puede mutar el pool de una empresa, la validación de callPhone termina
+     * comparando contra datos ya envenenados y el número de una cartera se cuela en otra.
+     */
+    findAccount(id) { return this.accountList.find((a) => a.id === id) ?? null; }
     isConnected() { return this.registerer?.state === RegistererState.Registered; }
     // ----------------------------------------------------------------- internos
     async fetchSession() {

@@ -2,6 +2,53 @@
 
 Formato: [Keep a Changelog](https://keepachangelog.com/es/1.1.0/). Versionado semántico.
 
+## [1.5.0] - 2026-09-24
+### Agregado
+- **Asignación de números por empresa cliente.** Antes las empresas separaban la cartera pero
+  compartían la bolsa de números; ahora cada una puede tener los suyos.
+  - `POST /v1/tokens` acepta `accounts` como objetos: `{ id, label?, cli?[], default_cli? }`.
+    Quien emite el token decide la asignación, y va firmada.
+  - `callPhone(destino, { account })` resuelve el número de esa empresa solo.
+  - `callPhone(destino, { account, from })` **fija** uno de los números de esa empresa; sin `from`,
+    la plataforma rota dentro de su pool.
+  - `rtc.accountsDetail()`, `rtc.account(id?)` y `rtc.allowedCli(account?)` para poblar el selector
+    del CRM. El evento `connected` trae `accountsDetail`.
+- Nueva causa `cli-no-pertenece-a-empresa` en `hangup`: el número existe, pero es de otra empresa.
+
+### Seguridad
+- **Se cierra el cruce de números entre carteras en el cliente.** Pedir un número de la empresa A
+  con `account: "B"` lanza error antes de enviar el INVITE.
+  ⚠️ Esto es defensa temprana, no la frontera: para que un front comprometido tampoco pueda hacerlo,
+  falta que el borde revalide CLI↔empresa contra el token firmado (ver Pendiente).
+- Un `default_cli` que apunte fuera del `cli` de su empresa se ignora (sería el mismo cruce).
+- `account()`, `accountsDetail()` y `allowedCli()` devuelven **copias**: mutar lo que entrega el SDK ya no
+  puede envenenar el pool de una empresa ni, con eso, colar su número en la cartera de otra.
+
+### Seguridad operativa
+- `__skipLocalCliCheck` (escape para probar el rechazo del borde) ahora emite un evento `warning`
+  con código `LOCAL_CLI_CHECK_SKIPPED` y un `console.warn` en cada uso: ya no puede quedar activo
+  en producción sin dejar rastro. Nuevo evento `warning` en `rtc.on()`.
+
+### Corregido
+- El número de presentación se normaliza igual que el destino: un CLI legítimo escrito
+  `"+56 2 2222 2222"` ya no rebota contra la validación.
+- Un `cli` mal formado en el token deja a esa empresa sin números propios (hereda el pool de la
+  cuenta) en vez de tumbar `connect()`.
+
+### Pendiente (lado plataforma, fuera de este repo)
+- El borde debe: aceptar `accounts` con objetos en `POST /v1/tokens`, **revalidar que el CLI
+  pertenezca a la empresa** contra el token firmado (responder `403` nombrando ambos, para que
+  mapee a `cli-no-pertenece-a-empresa`) y entender `X-Movatec-Cli-Mode`. Sin eso, el aislamiento
+  vive sólo en el navegador.
+- Sin verificar contra el edge real: que un INVITE cruzado armado a mano reciba efectivamente `403`.
+
+### Notas
+- Compatible hacia atrás: `accounts` como lista de strings se comporta igual que en 1.4.0, y una
+  empresa declarada sin `cli` hereda el pool de la cuenta.
+- Requiere soporte del borde para la cabecera `X-Movatec-Cli-Mode` (`fixed` = respetar el número
+  enviado, `pool` = rotar dentro del de la empresa). Si el borde la ignora, respeta el número
+  enviado, que es el comportamiento conservador.
+
 ## [1.4.0] - 2026-09-23
 ### Agregado
 - **Pool de números por empresa cliente.** Si tu cuenta gestiona carteras de varias empresas,

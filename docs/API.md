@@ -21,15 +21,18 @@ Todos los métodos y eventos están tipados en `dist/index.d.ts`. Aquí, la supe
 |---|---|
 | `connect()` | obtiene credenciales efímeras con el token y registra. Resuelve al quedar registrado |
 | `disconnect()` | cuelga, des-registra y cierra |
-| `callPhone(numero, { from, customHeaders })` | llamada a un número E.164 presentando el CLI `from` (debe estar autorizado para el usuario) |
+| `callPhone(numero, { from, account, customHeaders })` | llamada a un número E.164. `account` = empresa cliente cuya cartera se gestiona; `from` = número a presentar (debe estar asignado a esa empresa). Sin `from`, sale el de la empresa. |
 | `callUser(identidad)` | llamada a otro usuario registrado de la misma cuenta (no pasa por la red telefónica) |
-| `allowedCli()` | CLIs autorizados en el token |
+| `allowedCli(account?)` | CLIs autorizados en el token; con `account`, sólo los de esa empresa |
+| `accounts()` | ids de las empresas cliente habilitadas |
+| `accountsDetail()` | empresas con `{id, label, cli, defaultCli}` — para el selector del CRM |
+| `account(id?)` | una empresa, o la empresa por defecto del usuario |
 | `isConnected()` | registrado o no |
 | `getAudioInputDevices()` / `getAudioOutputDevices()` | dispositivos (pide permiso una vez para obtener etiquetas) |
 | `setAudioInputDevice(id)` / `setAudioOutputDevice(id)` | cambio de micrófono / parlante, también durante una llamada |
 | `selectedDevices()` / `canSelectOutput()` | estado de selección; `setSinkId` no existe en todos los navegadores |
 
-Eventos (`rtc.on(evento, fn)`): `connected` `{identity, allowedCli, capabilities}` · `disconnected` `{reason: user|token-expired|transport|auth-failed|server}` · `reconnecting` · `incoming-webrtc-call` `{call, from, to, identity, kind}` · `error` · `device-change` · `input-device-lost` · `output-device-lost` · `audio-level` `{level, speaking}`.
+Eventos (`rtc.on(evento, fn)`): `connected` `{identity, allowedCli, accounts, accountsDetail, defaultAccount, capabilities}` · `disconnected` `{reason: user|token-expired|transport|auth-failed|server}` · `reconnecting` · `incoming-webrtc-call` `{call, from, to, identity, kind}` · `error` · `warning` `{code, detail}` · `device-change` · `input-device-lost` · `output-device-lost` · `audio-level` `{level, speaking}`.
 
 ## `PhoneCall`
 | Método | Descripción |
@@ -50,6 +53,8 @@ Eventos (`call.on`): `ringing` · `established` · `hangup` `{reason, sipCode, s
 | Situación | Qué ve el SDK |
 |---|---|
 | Token vencido o revocado | `disconnected {reason: "token-expired"}` |
-| CLI no autorizado | excepción en `callPhone` o `hangup {sipCode: 403}` |
+| CLI no autorizado | excepción en `callPhone` o `hangup {sipCode: 403, cause: "cli-no-permitido"}` |
+| CLI de otra empresa | excepción en `callPhone` o `hangup {cause: "cli-no-pertenece-a-empresa"}` |
+| Empresa fuera del token | excepción en `callPhone` o `hangup {cause: "empresa-no-habilitada"}` |
 | Usuario destino no registrado (`callUser`) | `error {code: "USER_NOT_REGISTERED"}` |
 | Segunda llamada simultánea | excepción "Ya hay una llamada activa" |

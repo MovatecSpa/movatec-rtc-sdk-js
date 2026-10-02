@@ -1,0 +1,59 @@
+<!doctype html><meta charset="utf-8"><title>Cartera por empresa cliente — Movatec RTC</title>
+<p>CRM que atiende carteras de <b>varias empresas cliente</b>, cada una con sus propios números.
+El backend firma la asignación al pedir el token (<code>POST /v1/tokens</code> con
+<code>accounts: [{ id, label, cli, default_cli }]</code>); el navegador sólo elige la empresa.</p>
+
+<label>Empresa <select id="empresa"></select></label>
+<label>Presentar <select id="cli"></select></label>
+<input id="dst" placeholder="+569XXXXXXXX">
+<button id="call">Llamar</button> <button id="hang">Colgar</button>
+<pre id="log"></pre>
+
+<script type="module">
+import { createRtc } from "../dist/index.js";
+const log = (m) => (document.getElementById("log").textContent += m + "\n");
+const $ = (id) => document.getElementById(id);
+
+const token = new URLSearchParams(location.search).get("token");   // solo para demo
+const rtc = createRtc(token, { apiBaseUrl: "https://rtc-api.movatec.cl" });
+rtc.on("error", (e) => log("error " + JSON.stringify(e)));
+await rtc.connect();
+
+// Selector de empresa: sale del token, no está hardcodeado en el CRM.
+for (const a of rtc.accountsDetail()) {
+  $("empresa").add(new Option(a.label ?? a.id, a.id));
+}
+$("empresa").value = rtc.account()?.id ?? "";
+
+// Los números que se ofrecen son SOLO los de la empresa elegida: el agente no puede
+// presentar el número de un cliente a la cartera de otro.
+function pintarCli() {
+  const emp = rtc.account($("empresa").value);
+  $("cli").innerHTML = "";
+  // Sin números propios, la empresa hereda el pool de la cuenta.
+  const nums = emp?.cli.length ? emp.cli : rtc.allowedCli();
+  $("cli").add(new Option("(rotar el pool de la empresa)", ""));
+  for (const n of nums) $("cli").add(new Option(n, n));
+  $("cli").value = "";
+}
+$("empresa").onchange = pintarCli;
+pintarCli();
+
+let call;
+$("call").onclick = () => {
+  const opciones = { account: $("empresa").value };
+  // `from` vacío = que la plataforma rote dentro del pool de esa empresa.
+  if ($("cli").value) opciones.from = $("cli").value;
+  try {
+    call = rtc.callPhone($("dst").value, opciones);
+  } catch (e) {
+    return log("rechazada antes de salir: " + e.message);   // p. ej. CLI de otra empresa
+  }
+  call.on("ringing", () => log("timbrando"))
+      .on("established", () => log("en llamada"))
+      // El número que REALMENTE vio el destino: guárdalo junto a la gestión.
+      .on("outbound-ani", (a) => log(`presentado ${a.ani} (${a.fuente})`))
+      .on("hangup", (h) => log("colgado: " + (h.causeText ?? h.reason)));
+};
+$("hang").onclick = () => call?.hangup();
+</script>

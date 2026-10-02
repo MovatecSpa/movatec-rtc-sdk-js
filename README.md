@@ -129,6 +129,73 @@ empresa corresponden.
 
 Si no usas separación por empresa, omite `accounts` y todo funciona con el pool de la cuenta.
 
+#### Asignar números a cada empresa cliente
+
+Lo anterior separa las carteras, pero deja los números en una sola bolsa: cualquier agente puede
+presentar cualquier número de la cuenta. Si necesitas que **cada empresa tenga sus propios
+números** — el caso típico de un BPO o una empresa de cobranza que atiende marcas distintas —
+declara la asignación al emitir el token, con `accounts` como objetos:
+
+```js
+// En tu backend, al pedir el token para un agente:
+POST /v1/tokens
+{
+  "identity": "agente-42",
+  "accounts": [
+    { "id": "acme",   "label": "Acme SpA",  "cli": ["+56221111111"] },
+    { "id": "betasa", "label": "Beta S.A.", "cli": ["+56222222222", "+56222222223"],
+      "default_cli": "+56222222223" }
+  ],
+  "default_account": "acme"
+}
+```
+
+| Campo | Qué hace |
+|---|---|
+| `id` | Identificador de la empresa (el tuyo; para la plataforma es una etiqueta). |
+| `label` | Nombre para mostrar en el CRM. Opcional. |
+| `cli` | Números E.164 que **esa** empresa puede presentar. Si lo omites, hereda el pool de la cuenta. |
+| `default_cli` | Cuál de ellos usar por defecto. Si lo omites, el primero de `cli`. Se ignora si no está en `cli`. |
+
+Quien decide la asignación eres tú: el token la firma, así que tu backend puede cambiarla por
+agente, por campaña o por hora del día sin tocar nada en la plataforma ni en el CRM.
+
+Ya en el navegador, el número sale solo:
+
+```js
+rtc.callPhone("+56912345678", { account: "acme" });
+// From = +56221111111. Sin pasar `from`: la plataforma rota dentro del pool de acme.
+
+rtc.callPhone("+56912345678", { account: "betasa", from: "+56222222222" });
+// Fija ese número del pool de betasa; la plataforma lo respeta.
+
+rtc.callPhone("+56912345678", { account: "betasa", from: "+56221111111" });
+// ✗ Error inmediato: ese número es de acme. No se envía el INVITE.
+```
+
+Para pintar el selector de empresa en tu CRM:
+
+```js
+rtc.accountsDetail();
+// [{ id: "acme", label: "Acme SpA", cli: ["+56221111111"], defaultCli: "+56221111111" },
+//  { id: "betasa", label: "Beta S.A.", cli: [...], defaultCli: "+56222222223" }]
+
+rtc.account();               // la empresa por defecto del usuario
+rtc.account("betasa");       // una en particular
+rtc.allowedCli("betasa");    // sólo los números de betasa
+rtc.allowedCli();            // todos los del usuario
+```
+
+> **Ojo: el SDK no es la frontera de seguridad.** Rechaza el cruce antes de enviar la llamada para
+> darte el error temprano, y eso cubre el caso real de un CRM con un bug. Pero un front comprometido
+> arma el INVITE a mano y se salta al SDK entero: para cerrarlo de verdad, el borde tiene que
+> revalidar la asignación contra el token firmado y responder `403` →
+> `cause: "cli-no-pertenece-a-empresa"`. **Esa parte es un cambio de plataforma pendiente**; hasta
+> que esté, trata el aislamiento como una defensa del cliente, no como una garantía.
+
+Es **compatible hacia atrás**: `accounts` como lista de strings sigue funcionando igual que
+antes, y una empresa declarada como objeto sin `cli` hereda el pool de la cuenta.
+
 #### Número presentado al destino (ANI)
 
 El `from` que envías es la **entrada**: la red puede reescribir el número que finalmente ve
